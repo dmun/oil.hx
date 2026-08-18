@@ -292,6 +292,22 @@
     w
     h))
 
+(define (create-file! path)
+  (close-output-port (open-output-file path)))
+
+(define (changes-apply! changes)
+  (define (file? e) (eq? (entry-type e) 'file))
+  (for-each
+    (lambda (c)
+      (define old (change-old c))
+      (define new (change-new c))
+      (case (change-kind c)
+        [(create) ((if (file? new) create-file! create-directory!) (entry->path new))]
+        [(move) (rename-file-or-directory! (entry->path old) (entry->path new))]
+        [(delete) ((if (file? old) delete-file! delete-directory!) (entry->path old))]
+        [else (dbg! c)]))
+    changes))
+
 (define (oil-save!)
   (for-each
     (lambda (doc-id)
@@ -307,12 +323,15 @@
           ;; hack: can't shadow write nicely
           (undo)
           (set! *ignore-next-save* #t)
-          (hx.write!)
+          (hx.write)
           (enqueue-thread-local-callback-with-delay 50
             clear-status!)
           (enqueue-thread-local-callback redo)
           (oil-show-preview! (oil-preview-lines changes)
-            (lambda () (set-status! "oil: apply not implemented")))))
+            (lambda ()
+              (changes-apply! changes)
+              (set! *ignore-next-save* #t)
+              (hx.write!)))))
       doc-id)
     *oil-doc-ids*))
 
