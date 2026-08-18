@@ -205,7 +205,7 @@
               (cons entry rest)))))))
   (loop (split-many (trim text) "\n") '()))
 
-(fun diff-entries :: (dir string? -> new (listof entry?) -> (listof change?))
+(fun new->changes :: (dir string? -> new (listof entry?) -> (listof change?))
   (define (loop entries seen acc)
     (if (empty? entries)
       (cons (reverse acc) seen)
@@ -234,6 +234,15 @@
       (filter (lambda (o) (not (hashset-contains? seen (entry-id o))))
         (entries-in dir)))))
 
+; (fun validate-changes :: (changes (listof change?) -> (Result/c (listof change?) string?))
+; ())
+
+; (fun execute-changes! :: (changes (listof change?) -> (Result/c (listof change?) string?))
+;      (for-each (lambda (change)
+; (case (change-kind change)
+;       (('create) (create-directory! (string-append (change)))))
+;                        ) changes))
+
 (define (oil-save!)
   (for-each
     (lambda (doc-id)
@@ -241,9 +250,19 @@
       (define new (ok-and-then
                    (parse-oil-document (current-directory) doc-text)
                    (fn (x) x)))
-      (dbg! (diff-entries (current-directory) new))
+      (define changes (new->changes (current-directory) new))
+      (define problems (validate-changes changes))
+      ;; dry run: nothing touches disk until this comes back empty
+      (if (empty? problems)
+        (map (fn (change) (dbg! (change->string change))) changes)
+        problems)
       doc-id)
-    *oil-doc-ids*))
+    *oil-doc-ids*)
+  (push-component!
+    (prompt "apply changes? (y/n): "
+      (lambda (input)
+        (when (equal? input "y")
+          (dbg! "stinkyyyyyy"))))))
 
 (register-hook 'document-saved
   (lambda (doc-id)
