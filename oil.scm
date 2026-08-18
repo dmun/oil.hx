@@ -26,6 +26,8 @@
 
 (provide oil-open)
 
+(define (clear-status!) (set-status! ""))
+
 (define (directory-entries path)
   (define iter (read-dir-iter path))
   (define (collect entries)
@@ -40,7 +42,8 @@
 (define (set-document-lines! lines)
   (select_all)
   (replace-selection-with
-    (string-join lines "\n")))
+    ;; trailing newline to avoid extra write if 'insert-final-newline' set
+    (string-append (string-join lines "\n") "\n")))
 
 (define (read-dir-entry-file-type e)
   (cond
@@ -128,34 +131,35 @@
 
 (define (oil-open)
   (define dir (current-directory))
-  (define tmp-dir (string-append "/tmp/oil" dir ".d"))
+  (define tmp-dir (oil-tmp-path dir))
   (define uri (string-append "oil://" dir))
 
   (hx.new)
-  ; (set! *ignore-next-save* #t)
+  (set! *ignore-next-save* #t)
   (hx.write! tmp-dir)
 
   ; wait
   (enqueue-thread-local-callback
     (lambda ()
+      (set! *ignore-next-save* #f)
       (define doc-id (editor->doc-id (editor-focus)))
       (set! *oil-doc-ids* (cons doc-id *oil-doc-ids*))))
 
   (set-buffer-uri! uri)
   (add-entries! dir)
 
+  (set-document-lines! (oil-listing-lines dir)))
+
+(define (oil-listing-lines dir)
   (define (pad-id n width)
     (define s (number->string n))
     (define need (- width (string-length s)))
     (if (> need 0) (string-append (make-string need #\0) s) s))
-  (set-document-lines!
-    (map (lambda (entry)
-          (string-append
-            "/"
-            (pad-id (entry-id entry) 3)
-            " "
-            (oil-render-name entry)))
-      (entries-in dir))))
+  (map (lambda (entry)
+        (string-append "/" (pad-id (entry-id entry) 3) " " (oil-render-name entry)))
+    (entries-in dir)))
+
+(define (oil-tmp-path dir) (string-append "/tmp/oil" dir ".d"))
 
 (define x (cons "/003" "bruh.txt"))
 
@@ -297,9 +301,18 @@
                    (fn (x) x)))
       (define changes (new->changes (current-directory) new))
       (if (empty? changes)
-        (set-status! "oil: no changes")
-        (oil-show-preview! (oil-preview-lines changes)
-          (lambda () (set-status! "oil: apply not implemented"))))
+        (enqueue-thread-local-callback-with-delay 50
+          (fn () (set-status! "oil: no changes")))
+        (begin
+          ;; hack: can't shadow write nicely
+          (undo)
+          (set! *ignore-next-save* #t)
+          (hx.write!)
+          (enqueue-thread-local-callback-with-delay 50
+            clear-status!)
+          (enqueue-thread-local-callback redo)
+          (oil-show-preview! (oil-preview-lines changes)
+            (lambda () (set-status! "oil: apply not implemented")))))
       doc-id)
     *oil-doc-ids*))
 
