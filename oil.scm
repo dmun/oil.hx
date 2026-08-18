@@ -243,6 +243,51 @@
 ;       (('create) (create-directory! (string-append (change)))))
 ;                        ) changes))
 
+(fun oil-preview-lines :: (changes (listof change?) -> (listof string?))
+  (define problems (validate-changes changes))
+  (if (empty? problems)
+    (map change->string changes)
+    problems))
+
+(define (oil-show-preview! lines on-confirm)
+  (define prompt "[Y]es  [N]o")
+  (define width (foldl max 0 (map string-length (cons prompt lines))))
+  (define spacing
+    (make-string (quotient (- width (string-length prompt)) 2) #\space))
+  (define state (append lines (list "\n" (string-append spacing prompt))))
+  (define component
+    (new-component! "oil-preview"
+      state
+      (lambda (state rect frame)
+        (define inner (oil-popup-rect state rect))
+        (buffer/clear-with frame inner (theme-scope-ref "ui.popup"))
+        (widget/list/render frame
+          (area
+            (+ (area-x inner) 1)
+            (+ (area-y inner) 1)
+            (- (area-width inner) 2)
+            (- (area-height inner) 2))
+          (widget/list state)))
+      (hash "handle_event"
+        (lambda (state event)
+          (define c (key-event-char event))
+          (cond
+            [(or (equal? c #\y) (equal? c #\Y)) (on-confirm) event-result/close]
+            [(or (equal? c #\n) (equal? c #\N) (key-event-escape? event))
+              event-result/close]
+            [else event-result/consume])))))
+  (push-component! component))
+
+;; centred, just big enough for `lines`
+(define (oil-popup-rect lines rect)
+  (define w (+ 2 (foldl max 0 (map string-length lines))))
+  (define h (+ 2 (length lines)))
+  (area
+    (+ (area-x rect) (quotient (- (area-width rect) w) 2))
+    (+ (area-y rect) (quotient (- (area-height rect) h) 2))
+    w
+    h))
+
 (define (oil-save!)
   (for-each
     (lambda (doc-id)
@@ -251,18 +296,12 @@
                    (parse-oil-document (current-directory) doc-text)
                    (fn (x) x)))
       (define changes (new->changes (current-directory) new))
-      (define problems (validate-changes changes))
-      ;; dry run: nothing touches disk until this comes back empty
-      (if (empty? problems)
-        (map (fn (change) (dbg! (change->string change))) changes)
-        problems)
+      (if (empty? changes)
+        (set-status! "oil: no changes")
+        (oil-show-preview! (oil-preview-lines changes)
+          (lambda () (set-status! "oil: apply not implemented"))))
       doc-id)
-    *oil-doc-ids*)
-  (push-component!
-    (prompt "apply changes? (y/n): "
-      (lambda (input)
-        (when (equal? input "y")
-          (dbg! "stinkyyyyyy"))))))
+    *oil-doc-ids*))
 
 (register-hook 'document-saved
   (lambda (doc-id)

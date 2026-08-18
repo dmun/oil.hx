@@ -25,14 +25,12 @@
 (fun entry->path :: (e entry? -> string?)
   (string-append (entry-parent e) "/" (entry-name e)))
 
-;; #false when the change has no old/new side
 (fun change-source :: (c change? -> any/c)
   (if (change-old c) (entry->path (change-old c)) #f))
 
 (fun change-dest :: (c change? -> any/c)
   (if (change-new c) (entry->path (change-new c)) #f))
 
-;; One human readable line per change. This is the dry run the user reads.
 (fun change->string :: (c change? -> string?)
   (case (change-kind c)
     [(create) (string-append "CREATE " (change-dest c)
@@ -42,11 +40,7 @@
     [(copy) (string-append "COPY   " (change-source c) " -> " (change-dest c))]
     [else (string-append "?????  " (symbol->string (change-kind c)))]))
 
-;; `state` overlays the real filesystem: path -> #true (will exist) / #false
-;; (vacated by an earlier change in the batch). Paths absent from it fall
-;; through to a real stat. This is what makes a batch like
-;;   a.txt -> renamed.txt, b.txt -> a.txt
-;; validate cleanly instead of reporting a bogus collision on a.txt.
+;; `state` overlays the fs: path -> #true (will exist) / #false (vacated earlier in the batch)
 (define (simulated-exists? state path)
   (if (hash-contains? state path) (hash-ref state path) (path-exists? path)))
 
@@ -58,7 +52,6 @@
     [(string-contains? n "\n") (string-append "name contains a newline: " n)]
     [else #f]))
 
-;; -> (list problems next-state)
 (define (check-change c state)
   (define src (change-source c))
   (define dst (change-dest c))
@@ -83,7 +76,7 @@
       state))
   (list problems (if dst (hash-insert vacated dst #t) vacated)))
 
-;; Empty list means the batch is safe to apply, in this order.
+;; empty = safe to apply in this order
 (fun validate-changes :: (changes (listof change?) -> (listof string?))
   (define (loop cs state acc)
     (if (empty? cs)
