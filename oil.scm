@@ -2,7 +2,6 @@
 (require "helix/misc.scm")
 (require "helix/static.scm")
 (require "helix/components.scm")
-(require "helix/configuration.scm")
 (require-builtin helix/core/text as text.)
 
 (require "steel/result")
@@ -15,7 +14,8 @@
 (require "util.scm")
 
 (define *ignore-next-save* #f)
-(define *oil-doc-ids* '())
+;; doc-id usize -> directory url
+(define *oil-docs* (hash))
 
 (define *next-id* 1)
 ;; url -> (hash name -> entry)
@@ -24,20 +24,9 @@
 ;; old contents of a url, during a re-read
 (define *directory-desired* (box (hash)))
 
-(provide oil-open)
+(provide oil-open oil-parent)
 
 (define (clear-status!) (set-status! ""))
-
-(define (directory-entries path)
-  (define iter (read-dir-iter path))
-  (define (collect entries)
-    (let ([entry (read-dir-iter-next! iter)])
-      (if entry
-        (collect
-          (cons (read-dir-entry-file-name entry)
-            entries))
-        (reverse entries))))
-  (collect '()))
 
 (define (set-document-lines! lines)
   (select_all)
@@ -54,9 +43,6 @@
 (define (list-url parent)
   (or (hash-try-get (unbox *directory-cache*) parent) (hash)))
 
-(define (directory-read? parent)
-  (hash-contains? (unbox *directory-cache*) parent))
-
 (define (entry-by-id id)
   (hash-try-get *entries-by-id* id))
 
@@ -72,13 +58,11 @@
   (and (hash-contains? desired parent)
     (hash-try-get (hash-ref desired parent) name)))
 
-(fun store-entry! :: (storage any/c -> e entry? -> void?)
+(fun store-entry! :: (e entry? -> void?)
   (define parent (entry-parent e))
-  (define name (entry-name e))
-  (define storage-value (unbox storage))
-  (define entries (or (hash-try-get storage-value parent) (hash)))
-  (set-box! storage
-    (hash-insert storage-value parent (hash-insert entries name e)))
+  (define cache (unbox *directory-cache*))
+  (set-box! *directory-cache*
+    (hash-insert cache parent (hash-insert (list-url parent) (entry-name e) e)))
   void)
 
 ;; reuses the existing entry for parent/name, so ids survive a re-read
@@ -91,7 +75,7 @@
   (unless existing
     (set! *next-id* (+ *next-id* 1)))
   (set-entry-type! e type)
-  (store-entry! *directory-cache* e)
+  (store-entry! e)
   (set! *entries-by-id* (hash-insert *entries-by-id* (entry-id e) e))
   (when (pending-entry parent name)
     (define desired (unbox *directory-desired*))
@@ -130,25 +114,44 @@
   (end-update! path))
 
 (define (oil-open)
-  (define dir (current-directory))
-  (define tmp-dir (oil-tmp-path dir))
-  (define uri (string-append "oil://" dir))
+  (hx.open (oil-tmp-path (current-directory))))
 
-  (hx.new)
-  (set! *ignore-next-save* #t)
-  (hx.write! tmp-dir)
+;; from an oil buffer: go up; from a file: open its directory
+(define (oil-parent)
+  (define path (editor-document->path (editor->doc-id (editor-focus))))
+  (define dir (or (oil-tmp->dir path) path (current-directory)))
+  (hx.open (oil-tmp-path (parent-name dir))))
 
-  ; wait
-  (enqueue-thread-local-callback
-    (lambda ()
-      (set! *ignore-next-save* #f)
-      (define doc-id (editor->doc-id (editor-focus)))
-      (set! *oil-doc-ids* (cons doc-id *oil-doc-ids*))))
+;; "/tmp/oil<dir>.d" -> dir, or #f if `path` is not an oil tmp path
+(define (oil-tmp->dir path)
+  (and path
+    (starts-with? path "/tmp/oil")
+    (ends-with? path ".d")
+    (trim-end-matches (trim-start-matches path "/tmp/oil") ".d")))
 
-  (set-buffer-uri! uri)
-  (add-entries! dir)
+;; any document opened under the oil tmp prefix becomes an oil buffer
+(register-hook 'document-opened
+  (lambda (doc-id)
+    (define dir (oil-tmp->dir (editor-document->path doc-id)))
+    (when dir
+      (set! *oil-docs* (hash-insert *oil-docs* (doc-id->usize doc-id) dir))
+      (enqueue-thread-local-callback
+        (lambda ()
+          ;; only touch it if it actually got focus (skips previews etc)
+          (when (equal? (doc-id->usize doc-id)
+                 (doc-id->usize (editor->doc-id (editor-focus))))
+            (set-buffer-uri! (string-append "oil://" dir))
+            (add-entries! dir)
+            (set-document-lines! (oil-listing-lines dir))
+            ;; persist once so tmp parent dirs exist and a plain :w works
+            (set! *ignore-next-save* #t)
+            (hx.write!)))))))
 
-  (set-document-lines! (oil-listing-lines dir)))
+(register-hook 'document-closed
+  (lambda (e)
+    (define id (doc-id->usize (doc-closed-id e)))
+    (when (hash-contains? *oil-docs* id)
+      (set! *oil-docs* (hash-remove *oil-docs* id)))))
 
 (define (oil-listing-lines dir)
   (define (pad-id n width)
@@ -157,11 +160,17 @@
     (if (> need 0) (string-append (make-string need #\0) s) s))
   (map (lambda (entry)
         (string-append "/" (pad-id (entry-id entry) 3) " " (oil-render-name entry)))
-    (entries-in dir)))
+    (sort (entries-in dir) entry<?)))
+
+;; directories first, then alphabetic
+(define (entry<? a b)
+  (define dir-a (equal? (entry-type a) 'directory))
+  (define dir-b (equal? (entry-type b) 'directory))
+  (if (equal? dir-a dir-b)
+    (string<? (entry-name a) (entry-name b))
+    dir-a))
 
 (define (oil-tmp-path dir) (string-append "/tmp/oil" dir ".d"))
-
-(define x (cons "/003" "bruh.txt"))
 
 (fun oil-string-id->int :: (id string? -> (Result/c int? string?))
   (with-handler
@@ -238,15 +247,6 @@
       (filter (lambda (o) (not (hashset-contains? seen (entry-id o))))
         (entries-in dir)))))
 
-; (fun validate-changes :: (changes (listof change?) -> (Result/c (listof change?) string?))
-; ())
-
-; (fun execute-changes! :: (changes (listof change?) -> (Result/c (listof change?) string?))
-;      (for-each (lambda (change)
-; (case (change-kind change)
-;       (('create) (create-directory! (string-append (change)))))
-;                        ) changes))
-
 (fun oil-preview-lines :: (changes (listof change?) -> (listof string?))
   (define problems (validate-changes changes))
   (if (empty? problems)
@@ -301,6 +301,15 @@
     (set-status! (string-append "oil: " cmd " exited " (number->string status))))
   status)
 
+;; drop `e` from its parent's listing (entries-by-id untouched)
+(define (cache-unlist! e)
+  (define parent (entry-parent e))
+  (set-box! *directory-cache*
+    (hash-insert (unbox *directory-cache*) parent
+      (hash-remove (list-url parent) (entry-name e)))))
+
+;; applies each change to disk and mirrors it in the cache, so ids
+;; survive moves and no re-read is needed afterwards
 (define (changes-apply! changes)
   (define (file? e) (eq? (entry-type e) 'file))
   (for-each
@@ -309,48 +318,55 @@
       (define new (change-new c))
       (case (change-kind c)
         [(create)
-          ((if (file? new) create-file! create-directory!) (entry->path new))]
+          ((if (file? new) create-file! create-directory!) (entry->path new))
+          (create-entry! (entry-parent new) (entry-name new) (entry-type new))]
         [(move)
-          (rename-file-or-directory! (entry->path old) (entry->path new))]
+          (rename-file-or-directory! (entry->path old) (entry->path new))
+          (cache-unlist! old)
+          (set-entry-parent! old (entry-parent new))
+          (set-entry-name! old (entry-name new))
+          (store-entry! old)]
         [(delete)
-          ((if (file? old) delete-file! delete-directory!) (entry->path old))]
+          ((if (file? old) delete-file! delete-directory!) (entry->path old))
+          (cache-unlist! old)
+          (set! *entries-by-id* (hash-remove *entries-by-id* (entry-id old)))]
         [(copy)
-          (run! "cp" (list "-a" (entry->path old) (entry->path new)))]
+          (run! "cp" (list "-a" (entry->path old) (entry->path new)))
+          (create-entry! (entry-parent new) (entry-name new) (entry-type new))]
         [else (dbg! c)]))
     changes))
 
-(define (oil-save!)
-  (for-each
-    (lambda (doc-id)
-      (define doc-text (text.rope->string (editor->text doc-id)))
-      (define new (ok-and-then
-                   (parse-oil-document (current-directory) doc-text)
-                   (fn (x) x)))
-      (define changes (new->changes (current-directory) new))
-      (if (empty? changes)
-        (enqueue-thread-local-callback-with-delay 50
-          (fn () (set-status! "oil: no changes")))
-        (begin
-          ;; hack: can't shadow write nicely
-          (undo)
-          (set! *ignore-next-save* #t)
-          (hx.write!)
-          (enqueue-thread-local-callback-with-delay 50
-            clear-status!)
-          (enqueue-thread-local-callback redo)
-          (oil-show-preview! (oil-preview-lines changes)
+(define (oil-save! doc-id dir)
+  (define doc-text (text.rope->string (editor->text doc-id)))
+  (define new (ok-and-then
+               (parse-oil-document dir doc-text)
+               (fn (x) x)))
+  (define changes (new->changes dir new))
+  (if (empty? changes)
+    (enqueue-thread-local-callback-with-delay 50
+      (fn () (set-status! "oil: no changes")))
+    (begin
+      ;; hack: can't shadow write nicely
+      (undo)
+      (set! *ignore-next-save* #t)
+      (hx.write!)
+      (enqueue-thread-local-callback-with-delay 50
+        clear-status!)
+      (enqueue-thread-local-callback redo)
+      (oil-show-preview! (oil-preview-lines changes)
+        (lambda ()
+          (changes-apply! changes)
+          ;; cache is already up to date; just re-render
+          (enqueue-thread-local-callback
             (lambda ()
-              (changes-apply! changes)
+              (set-document-lines! (oil-listing-lines dir))
               (set! *ignore-next-save* #t)
-              (hx.write!)))))
-      doc-id)
-    *oil-doc-ids*))
+              (hx.write!))))))))
 
 (register-hook 'document-saved
   (lambda (doc-id)
-    (when (member
-           (doc-id->usize doc-id)
-           (map doc-id->usize *oil-doc-ids*))
+    (define dir (hash-try-get *oil-docs* (doc-id->usize doc-id)))
+    (when dir
       (if *ignore-next-save*
         (set! *ignore-next-save* #f)
-        (oil-save!)))))
+        (oil-save! doc-id dir)))))
