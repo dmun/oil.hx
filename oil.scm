@@ -295,6 +295,12 @@
 (define (create-file! path)
   (close-output-port (open-output-file path)))
 
+(define (run! cmd args)
+  (define status (unwrap-ok (wait (unwrap-ok (spawn-process (command cmd args))))))
+  (unless (equal? status 0)
+    (set-status! (string-append "oil: " cmd " exited " (number->string status))))
+  status)
+
 (define (changes-apply! changes)
   (define (file? e) (eq? (entry-type e) 'file))
   (for-each
@@ -302,9 +308,14 @@
       (define old (change-old c))
       (define new (change-new c))
       (case (change-kind c)
-        [(create) ((if (file? new) create-file! create-directory!) (entry->path new))]
-        [(move) (rename-file-or-directory! (entry->path old) (entry->path new))]
-        [(delete) ((if (file? old) delete-file! delete-directory!) (entry->path old))]
+        [(create)
+          ((if (file? new) create-file! create-directory!) (entry->path new))]
+        [(move)
+          (rename-file-or-directory! (entry->path old) (entry->path new))]
+        [(delete)
+          ((if (file? old) delete-file! delete-directory!) (entry->path old))]
+        [(copy)
+          (run! "cp" (list "-a" (entry->path old) (entry->path new)))]
         [else (dbg! c)]))
     changes))
 
@@ -323,7 +334,7 @@
           ;; hack: can't shadow write nicely
           (undo)
           (set! *ignore-next-save* #t)
-          (hx.write)
+          (hx.write!)
           (enqueue-thread-local-callback-with-delay 50
             clear-status!)
           (enqueue-thread-local-callback redo)
