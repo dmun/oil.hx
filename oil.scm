@@ -13,9 +13,10 @@
 (require "debug.scm")
 (require "util.scm")
 
-(define *ignore-next-save* #f)
-;; doc-id usize -> directory url
+;; doc-id usize -> (doc-id . directory url)
 (define *oil-docs* (hash))
+;; doc-id usizes whose next 'document-saved is our own write, not the user's
+(define *oil-ignore* (hash))
 
 (define *next-id* 1)
 ;; url -> (hash name -> entry)
@@ -33,6 +34,28 @@
   (replace-selection-with
     ;; trailing newline to avoid extra write if 'insert-final-newline' set
     (string-append (string-join lines "\n") "\n")))
+
+;; run `thunk` with `doc-id` shown in the focused view, switching back after
+(define (with-doc! doc-id thunk)
+  (define prev (editor->doc-id (editor-focus)))
+  (if (equal? (doc-id->usize prev) (doc-id->usize doc-id))
+    (thunk)
+    (begin
+      (editor-switch-action! doc-id (Action/Replace))
+      (thunk)
+      (editor-switch-action! prev (Action/Replace)))))
+
+(define (ignore-next-save! doc-id)
+  (set! *oil-ignore* (hash-insert *oil-ignore* (doc-id->usize doc-id) #t)))
+
+;; render `dir`'s listing into `doc-id` and persist it
+(define (oil-render! doc-id dir)
+  (when (editor-doc-exists? doc-id)
+    (with-doc! doc-id
+      (lambda ()
+        (set-document-lines! (oil-listing-lines dir))
+        (ignore-next-save! doc-id)
+        (hx.write!)))))
 
 (define (read-dir-entry-file-type e)
   (cond
@@ -134,24 +157,24 @@
   (lambda (doc-id)
     (define dir (oil-tmp->dir (editor-document->path doc-id)))
     (when dir
-      (set! *oil-docs* (hash-insert *oil-docs* (doc-id->usize doc-id) dir))
+      (set! *oil-docs*
+        (hash-insert *oil-docs* (doc-id->usize doc-id) (cons doc-id dir)))
       (enqueue-thread-local-callback
         (lambda ()
-          ;; only touch it if it actually got focus (skips previews etc)
-          (when (equal? (doc-id->usize doc-id)
-                 (doc-id->usize (editor->doc-id (editor-focus))))
-            (set-buffer-uri! (string-append "oil://" dir))
+          (when (editor-doc-exists? doc-id)
             (add-entries! dir)
-            (set-document-lines! (oil-listing-lines dir))
-            ;; persist once so tmp parent dirs exist and a plain :w works
-            (set! *ignore-next-save* #t)
-            (hx.write!)))))))
+            (with-doc! doc-id
+              (lambda () (set-buffer-uri! (string-append "oil://" dir))))
+            ;; also persists, so tmp parent dirs exist and a plain :w works
+            (oil-render! doc-id dir)))))))
 
 (register-hook 'document-closed
   (lambda (e)
     (define id (doc-id->usize (doc-closed-id e)))
     (when (hash-contains? *oil-docs* id)
-      (set! *oil-docs* (hash-remove *oil-docs* id)))))
+      (set! *oil-docs* (hash-remove *oil-docs* id)))
+    (when (hash-contains? *oil-ignore* id)
+      (set! *oil-ignore* (hash-remove *oil-ignore* id)))))
 
 (define (oil-listing-lines dir)
   (define (pad-id n width)
@@ -218,7 +241,7 @@
               (cons entry rest)))))))
   (loop (split-many (trim text) "\n") '()))
 
-(fun new->changes :: (dir string? -> new (listof entry?) -> (listof change?))
+(fun new->changes :: (dirs (listof string?) -> new (listof entry?) -> (listof change?))
   (define (loop entries seen acc)
     (if (empty? entries)
       (cons (reverse acc) seen)
@@ -241,11 +264,22 @@
   (define changes (car result))
   (define seen (cdr result))
 
-  ;; whatever the cache has for `dir` and the buffer never mentioned is a delete
-  (append changes
-    (map (lambda (o) (change 'delete o #f))
-      (filter (lambda (o) (not (hashset-contains? seen (entry-id o))))
-        (entries-in dir)))))
+  ;; whatever the cache lists for `dirs` and no buffer mentioned is a delete.
+  ;; built with cons folds: steel 0.8.2's `append` corrupts 5-8 element
+  ;; lists coming out of map/filter chains (length ok, iterates as empty)
+  (define deletes
+    (foldl
+      (lambda (dir acc)
+        (foldl
+          (lambda (o acc)
+            (if (hashset-contains? seen (entry-id o))
+              acc
+              (cons (change 'delete o #f) acc)))
+          acc
+          (entries-in dir)))
+      '()
+      dirs))
+  (append changes deletes))
 
 (fun oil-preview-lines :: (changes (listof change?) -> (listof string?))
   (define problems (validate-changes changes))
@@ -336,19 +370,32 @@
         [else (dbg! c)]))
     changes))
 
-(define (oil-save! doc-id dir)
-  (define doc-text (text.rope->string (editor->text doc-id)))
-  (define new (ok-and-then
-               (parse-oil-document dir doc-text)
-               (fn (x) x)))
-  (define changes (new->changes dir new))
+;; dir -> doc-id, one buffer per dir (a second buffer of a dir would double-parse)
+(define (oil-dir-docs)
+  (foldl (lambda (p acc) (hash-insert acc (cdr p) (car p)))
+    (hash)
+    (hash-values->list *oil-docs*)))
+
+;; a save diffs *all* oil buffers at once, so cross-buffer cut/paste is a move
+(define (oil-save! doc-id)
+  (define docs (dbg! (oil-dir-docs)))
+  (define dirs (hash-keys->list docs))
+  (define entries
+    (apply append
+      (map
+        (lambda (dir)
+          (unwrap-ok
+            (parse-oil-document dir
+              (text.rope->string (editor->text (hash-ref docs dir))))))
+        dirs)))
+  (define changes (new->changes dirs entries))
   (if (empty? changes)
     (enqueue-thread-local-callback-with-delay 50
       (fn () (set-status! "oil: no changes")))
     (begin
       ;; hack: can't shadow write nicely
       (undo)
-      (set! *ignore-next-save* #t)
+      (ignore-next-save! doc-id)
       (hx.write!)
       (enqueue-thread-local-callback-with-delay 50
         clear-status!)
@@ -356,17 +403,17 @@
       (oil-show-preview! (oil-preview-lines changes)
         (lambda ()
           (changes-apply! changes)
-          ;; cache is already up to date; just re-render
+          ;; cache is already up to date; re-render every oil buffer
           (enqueue-thread-local-callback
             (lambda ()
-              (set-document-lines! (oil-listing-lines dir))
-              (set! *ignore-next-save* #t)
-              (hx.write!))))))))
+              (for-each
+                (lambda (dir) (oil-render! (hash-ref docs dir) dir))
+                dirs))))))))
 
 (register-hook 'document-saved
   (lambda (doc-id)
-    (define dir (hash-try-get *oil-docs* (doc-id->usize doc-id)))
-    (when dir
-      (if *ignore-next-save*
-        (set! *ignore-next-save* #f)
-        (oil-save! doc-id dir)))))
+    (define id (doc-id->usize doc-id))
+    (when (hash-contains? *oil-docs* id)
+      (if (hash-contains? *oil-ignore* id)
+        (set! *oil-ignore* (hash-remove *oil-ignore* id))
+        (oil-save! doc-id)))))
