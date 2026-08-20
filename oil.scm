@@ -221,10 +221,10 @@
   (define trimmed (trim line))
   (match (split-once trimmed " ")
     [(list raw-id name)
-      (map-ok
-        (oil-string-id->int raw-id)
-        (fn (id)
-          (entry id dir (oil-bare-name name) (oil-name-type name) #f)))]
+     (map-ok
+       (oil-string-id->int raw-id)
+       (fn (id)
+         (entry id dir (oil-bare-name name) (oil-name-type name) #f)))]
     [#t (Ok (entry (gen-id!) dir (oil-bare-name trimmed) (oil-name-type trimmed) #f))]
     [_ (Err "failed to parse line")]))
 
@@ -253,8 +253,8 @@
                  [(not o) (change 'create #f n)]
                  [(hashset-contains? seen id) (change 'copy o n)]
                  [(and (equal? (entry-parent o) (entry-parent n))
-                     (equal? (entry-name o) (entry-name n)))
-                   #f]
+                       (equal? (entry-name o) (entry-name n)))
+                  #f]
                  [else (change 'move o n)])])
         (loop (cdr entries)
           (hashset-insert seen id)
@@ -312,7 +312,7 @@
           (cond
             [(or (equal? c #\y) (equal? c #\Y)) (on-confirm) event-result/close]
             [(or (equal? c #\n) (equal? c #\N) (key-event-escape? event))
-              event-result/close]
+             event-result/close]
             [else event-result/consume])))))
   (push-component! component))
 
@@ -352,21 +352,21 @@
       (define new (change-new c))
       (case (change-kind c)
         [(create)
-          ((if (file? new) create-file! create-directory!) (entry->path new))
-          (create-entry! (entry-parent new) (entry-name new) (entry-type new))]
+         ((if (file? new) create-file! create-directory!) (entry->path new))
+         (create-entry! (entry-parent new) (entry-name new) (entry-type new))]
         [(move)
-          (rename-file-or-directory! (entry->path old) (entry->path new))
-          (cache-unlist! old)
-          (set-entry-parent! old (entry-parent new))
-          (set-entry-name! old (entry-name new))
-          (store-entry! old)]
+         (rename-file-or-directory! (entry->path old) (entry->path new))
+         (cache-unlist! old)
+         (set-entry-parent! old (entry-parent new))
+         (set-entry-name! old (entry-name new))
+         (store-entry! old)]
         [(delete)
-          ((if (file? old) delete-file! delete-directory!) (entry->path old))
-          (cache-unlist! old)
-          (set! *entries-by-id* (hash-remove *entries-by-id* (entry-id old)))]
+         ((if (file? old) delete-file! delete-directory!) (entry->path old))
+         (cache-unlist! old)
+         (set! *entries-by-id* (hash-remove *entries-by-id* (entry-id old)))]
         [(copy)
-          (run! "cp" (list "-a" (entry->path old) (entry->path new)))
-          (create-entry! (entry-parent new) (entry-name new) (entry-type new))]
+         (run! "cp" (list "-a" (entry->path old) (entry->path new)))
+         (create-entry! (entry-parent new) (entry-name new) (entry-type new))]
         [else (dbg! c)]))
     changes))
 
