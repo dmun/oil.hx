@@ -1,109 +1,56 @@
-(provide fun)
+(provide fun
+         fun-build
+         false?
+         concat
+         box-update!
+         match-result)
 
-;; Fancy alternative syntax to generating define/contracts
-;; Might be easier to read
+;; Haskell-ish notation for define/contract:
+;;
+;;   (fun add-two :: (left int? -> right int? -> int?)
+;;     (+ left right))
+;;
+;; The last element of the signature is the return contract; everything before
+;; it is one `name contract ->` per argument.
+
+;; peels the signature one argument at a time, collecting names and contracts
+(define-syntax fun-build
+  (syntax-rules (->)
+    ;; only the return contract is left
+    [(fun-build name (return) (arg ...) (contract ...) body ...)
+     (define/contract (name arg ...) (->/c contract ... return) body ...)]
+    [(fun-build name (next-arg next-contract -> rest ...) (arg ...) (contract ...) body ...)
+     (fun-build name
+                (rest ...)
+                (arg ... next-arg)
+                (contract ... next-contract)
+                body ...)]))
 
 (define-syntax fun
   (syntax-rules (:: ->)
-    ;; no arguments: (fun name :: (return) body ...) or (fun name :: (-> return) ...)
-    [(fun name :: (return) body ...)
-     (define/contract (name) (->/c return) body ...)]
-    [(fun name :: (-> return) body ...)
-     (define/contract (name) (->/c return) body ...)]
-    [(fun name :: (arg c -> return) body ...)
-     (define/contract (name arg) (->/c c return) body ...)]
-    [(fun name :: (arg c -> arg1 c1 -> return) body ...)
-     (define/contract (name arg arg1) (->/c c c1 return) body ...)]
-    [(fun name :: (arg c -> arg1 c1 -> arg2 c2 -> return) body ...)
-     (define/contract (name arg arg1 arg2) (->/c c c1 c2 return) body ...)]
-    [(fun name :: (arg c
-                       -> arg1 c1
-                       -> arg2 c2
-                       -> arg3 c3
-                       -> return) body ...)
-     (define/contract
-       (name arg arg1 arg2 arg3)
-       (->/c c c1 c2 c3 return) body ...)]
-    [(fun name :: (arg c
-                       -> arg1 c1
-                       -> arg2 c2
-                       -> arg3 c3
-                       -> arg4 c4
-                       -> return) body ...)
-     (define/contract
-       (name arg arg1 arg2 arg3 arg4)
-       (->/c c c1 c2 c3 c4 return) body ...)]
-    [(fun name :: (arg c
-                       -> arg1 c1
-                       -> arg2 c2
-                       -> arg3 c3
-                       -> arg4 c4
-                       -> arg5 c5
-                       -> return) body ...)
-     (define/contract
-       (name arg arg1 arg2 arg3 arg4 arg5)
-       (->/c c c1 c2 c3 c4 c5 return) body ...)]
-    [(fun name :: (arg c
-                       -> arg1 c1
-                       -> arg2 c2
-                       -> arg3 c3
-                       -> arg4 c4
-                       -> arg5 c5
-                       -> arg6 c6
-                       -> return) body ...)
-     (define/contract
-       (name arg arg1 arg2 arg3 arg4 arg5 arg6)
-       (->/c c c1 c2 c3 c4 c5 c6 return) body ...)]
-    [(fun name :: (arg c
-                       -> arg1 c1
-                       -> arg2 c2
-                       -> arg3 c3
-                       -> arg4 c4
-                       -> arg5 c5
-                       -> arg6 c6
-                       -> arg7 c7
-                       -> return) body ...)
-     (define/contract
-       (name arg arg1 arg2 arg3 arg4 arg5 arg6 arg7)
-       (->/c c c1 c2 c3 c4 c5 c6 c7 return) body ...)]
-    [(fun name :: (arg c
-                       -> arg1 c1
-                       -> arg2 c2
-                       -> arg3 c3
-                       -> arg4 c4
-                       -> arg5 c5
-                       -> arg6 c6
-                       -> arg7 c7
-                       -> arg8 c8
-                       -> return) body ...)
-     (define/contract
-       (name arg arg1 arg2 arg3 arg4 arg5 arg6 arg7 arg8)
-       (->/c c c1 c2 c3 c4 c5 c6 c7 c8 return) body ...)]
-    [(fun name :: (arg c
-                       -> arg1 c1
-                       -> arg2 c2
-                       -> arg3 c3
-                       -> arg4 c4
-                       -> arg5 c5
-                       -> arg6 c6
-                       -> arg7 c7
-                       -> arg8 c8
-                       -> arg9 c9
-                       -> return) body ...)
-     (define/contract
-       (name arg arg1 arg2 arg3 arg4 arg5 arg6 arg7 arg8 arg9)
-       (->/c c c1 c2 c3 c4 c5 c6 c7 c8 c9 return) body ...)]))
+    ;; no arguments, written either (int?) or (-> int?)
+    [(fun name :: (-> return) body ...) (fun-build name (return) () () body ...)]
+    [(fun name :: signature body ...) (fun-build name signature () () body ...)]))
 
+(define (false? v) (equal? v #f))
 
-;; New more palatable function declarations
-;; similar to haskell / agda kinda stuff
-; (fun add-two :: (left int? -> right int? -> int?)
-;      (+ left right))
+;; `(append a b)`, built from cons: steel 0.8.2's `append` corrupts 5-8 element
+;; lists coming out of map/filter chains (length ok, iterates as empty)
+(define (concat a b) (foldl cons b (reverse a)))
 
-; (displayln (add-two 10 20))
+(define (box-update! b f) (set-box! b (f (unbox b))))
 
+(define-syntax match-result
+  (syntax-rules (Ok Err)
+    ((_ expr
+        ((Ok val) ok-body ...)
+        ((Err err) err-body ...))
+     (let ((result expr))
+       (cond
+         ((Ok? result)
+          (let ((val (Ok->value result)))
+            ok-body ...))
+         ((Err? result)
+          (let ((err (Err->value result)))
+            err-body ...)))))))
 
-; (fun boop-lemma-1 :: (l any/c -> any/c)
-;      (displayln l))
-
-; (boop-lemma-1 "alex")

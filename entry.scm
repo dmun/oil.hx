@@ -18,7 +18,7 @@
 ;;   parent   - url of the directory currently containing this entry
 ;;   name     - filename within `parent`
 ;;   type     - 'file | 'directory | 'link
-;;   metadata - #false, or a hash of adapter-provided extras (size, mtime, ...)
+;;   metadata - #f, or a hash of adapter-provided extras (size, mtime, ...)
 ;;
 ;; `id` deliberately has no exported setter.
 (struct entry (id parent name type metadata) #:mutable #:transparent)
