@@ -1,7 +1,7 @@
 (require "helix/editor.scm")
 (require "helix/misc.scm")
 (require "helix/static.scm")
-(require "helix/components.scm")
+
 (require-builtin helix/core/text as text.)
 
 (require "steel/result")
@@ -10,53 +10,19 @@
 
 (require "entry.scm")
 (require "action.scm")
-(require "debug.scm")
+(require "ui.scm")
 (require "util.scm")
 
 ;; doc-id usize -> (doc-id . directory url)
 (define *oil-docs* (box (hash)))
+
 ;; doc-id usizes whose next 'document-saved is our own write, not the user's
 (define *oil-ignore* (box (hash)))
 
 (define *next-id* (box 1))
-;; url -> (hash name -> entry)
-(define *directory-cache* (box (hash)))
-;; entry id -> entry
-(define *entries-by-id* (box (hash)))
-;; old contents of a url, during a re-read
-(define *directory-desired* (box (hash)))
-;; #t while the preview popup is up, so a second save can't diff a buffer
-;; that is half-way through being restored
-(define *preview-open* (box #f))
+(define *entries* (box (hash)))
 
 (provide oil-open oil-parent)
-
-(define (clear-status!) (set-status! ""))
-
-(define-syntax with-delay
-  (syntax-rules ()
-                ((_ delay body ...)
-                 (enqueue-thread-local-callback-with-delay
-                  delay
-                  (fn () body ...)))))
-
-(define-syntax schedule
-  (syntax-rules ()
-                ((_ body ...)
-                 (enqueue-thread-local-callback
-                  (fn () body ...)))))
-
-;; run command that rely on focused doc
-(define-syntax with-doc
-  (syntax-rules ()
-                ((_ doc-id body ...)
-                 (let ([prev (editor->doc-id (editor-focus))])
-                   (if (equal? (doc-id->usize prev) (doc-id->usize doc-id))
-                     ((fn () body ...))
-                     (begin
-                       (editor-switch-action! doc-id (Action/Replace))
-                       ((fn () body ...))
-                       (editor-switch-action! prev (Action/Replace))))))))
 
 (define (set-document-lines! lines)
   (select_all)
@@ -64,8 +30,6 @@
     ;; trailing newline to avoid extra write if 'insert-final-newline' set
     (string-append (string-join lines "\n") "\n")))
 
-;; helix registers no predicate for DocumentId, so duck-type it: doc-id->usize
-;; raises on anything else
 (define (doc-id? v)
   (with-handler (fn (_) #f) (begin (doc-id->usize v) #t)))
 
@@ -87,71 +51,53 @@
     [(read-dir-entry-is-dir? e) 'directory]
     [else 'file]))
 
-(define (list-url parent)
-  (or (hash-try-get (unbox *directory-cache*) parent) (hash)))
-
-(define (entry-by-id id)
-  (hash-try-get (unbox *entries-by-id*) id))
-
-(define (entry-by-name parent name)
-  (hash-try-get (list-url parent) name))
-
 ;; unordered
-(define (entries-in parent)
-  (hash-values->list (list-url parent)))
+(fun entries-in :: (cache hash? -> parent string? -> (listof entry?))
+  (filter
+    (fn (e) (equal? (entry-parent e) parent))
+    (hash-values->list cache)))
 
-(define (pending-entry parent name)
-  (define desired (unbox *directory-desired*))
-  (and (hash-contains? desired parent)
-    (hash-try-get (hash-ref desired parent) name)))
+(fun store-entry! :: (e entry? -> any/c)
+  (box-update! *entries*
+    (fn (cache) (hash-insert cache (entry-id e) e))))
 
-(fun store-entry! :: (e entry? -> void?)
-  (define parent (entry-parent e))
-  (box-update! *directory-cache*
-    (fn (cache)
-      (hash-insert cache parent (hash-insert (list-url parent) (entry-name e) e))))
-  void)
-
-;; reuses the existing entry for parent/name, so ids survive a re-read
-(define (create-entry! parent name type)
-  (define existing (or (entry-by-name parent name) (pending-entry parent name)))
-  (define e (or existing (entry (gen-id!) parent name type #f)))
-  (set-entry-type! e type)
-  (store-entry! e)
-  (box-update! *entries-by-id* (fn (all) (hash-insert all (entry-id e) e)))
-  (when (pending-entry parent name)
-    (box-update! *directory-desired*
-      (fn (desired)
-        (hash-insert desired parent (hash-remove (hash-ref desired parent) name)))))
-  e)
-
-(define (forget-entry! e)
-  (box-update! *entries-by-id* (fn (all) (hash-remove all (entry-id e)))))
-
-(define (begin-update! parent)
-  (box-update! *directory-desired*
-    (fn (desired) (hash-insert desired parent (list-url parent))))
-  (box-update! *directory-cache*
-    (fn (cache) (hash-insert cache parent (hash)))))
-
-(define (end-update! parent)
-  (define desired (unbox *directory-desired*))
-  (when (hash-contains? desired parent)
-    ;; whatever is left was deleted on disk
-    (for-each forget-entry! (hash-values->list (hash-ref desired parent)))
-    (set-box! *directory-desired* (hash-remove desired parent))))
+;; Replaces one directory's slice of the canonical cache in one update.
+(define (replace-directory! parent entries)
+  (define retained
+    (foldl
+      (fn (e cache)
+        (if (equal? (entry-parent e) parent)
+          cache
+          (hash-insert cache (entry-id e) e)))
+      (hash)
+      (hash-values->list (unbox *entries*))))
+  (set-box! *entries*
+    (foldl
+      (fn (e cache) (hash-insert cache (entry-id e) e))
+      retained
+      entries)))
 
 (define (add-entries! path)
+  (define previous
+    (foldl
+      (fn (e by-name) (hash-insert by-name (entry-name e) e))
+      (hash)
+      (entries-in (unbox *entries*) path)))
   (define iter (read-dir-iter path))
-  (begin-update! path)
-  (let loop ()
+  (define (loop found)
     (let ([e (read-dir-iter-next! iter)])
-      (when e
-        (create-entry! path
-          (read-dir-entry-file-name e)
-          (read-dir-entry-file-type e))
-        (loop))))
-  (end-update! path))
+      (if e
+        (let* ([name (read-dir-entry-file-name e)]
+               [old (hash-try-get previous name)]
+               [fresh (entry
+                        (if old (entry-id old) (gen-id!))
+                        path
+                        name
+                        (read-dir-entry-file-type e)
+                        (if old (entry-metadata old) #f))])
+          (loop (cons fresh found)))
+        (replace-directory! path (reverse found)))))
+  (loop '()))
 
 (define (oil-open)
   (hx.open (oil-tmp-path (current-directory))))
@@ -168,9 +114,6 @@
 (define (oil-tmp-path dir)
   (string-append oil-tmp-prefix dir oil-tmp-suffix))
 
-;; "/tmp/oil<dir>.d" -> dir, or #f if `path` is not an oil tmp path.
-;; Strips exactly one prefix and one suffix, so a directory of its own named
-;; "foo.d" still maps back to itself.
 (define (oil-tmp->dir path)
   (and path
     (starts-with? path oil-tmp-prefix)
@@ -187,7 +130,7 @@
     (if (> need 0) (string-append (make-string need #\0) s) s))
   (map (fn (entry)
         (string-append "/" (pad-id (entry-id entry) 3) " " (oil-render-name entry)))
-    (sort (entries-in dir) entry<?)))
+    (sort (entries-in (unbox *entries*) dir) entry<?)))
 
 ;; directories first, then alphabetic
 (define (entry<? a b)
@@ -248,10 +191,10 @@
   (define (loop lines parsed)
     (if (empty? lines)
       (Ok (reverse parsed))
-      (let ([e (oil-line->entry dir (car lines))])
-        (if (Ok? e)
-          (loop (cdr lines) (cons (unwrap-ok e) parsed))
-          e))))
+      (ok-and-then (oil-line->entry dir (car lines))
+                   (fn (e)
+                       (loop (cdr lines)
+                             (cons e parsed))))))
   (loop (text->lines text) '()))
 
 ;; the entries of every oil buffer, in `dirs` order; Err from the first buffer
@@ -264,86 +207,8 @@
       (Ok parsed)
       (let ([dir (car remaining)])
         (ok-and-then (oil-doc->entries dir (buffer-text (hash-ref docs dir)))
-          (fn (entries) (loop (cdr remaining) (concat parsed entries)))))))
+          (fn (entries) (loop (cdr remaining) (append (reverse entries) parsed)))))))
   (loop dirs '()))
-
-;; diffs the buffer entries against the cache. The result is in buffer order,
-;; which is not a safe order to apply: `order-actions` sorts that out.
-(fun diff-entries :: (dirs (listof string?) -> dest (listof entry?) -> (listof action?))
-  (define (loop entries seen acc)
-    (if (empty? entries)
-      (values (reverse acc) seen)
-      (let* ([n (car entries)]
-             [id (entry-id n)]
-             [src (entry-by-id id)]
-             [c (cond
-                 [(not src) (action 'create #f n)]
-                 [(hashset-contains? seen id) (action 'copy src n)]
-                 [(and (equal? (entry-parent src) (entry-parent n))
-                       (equal? (entry-name src) (entry-name n)))
-                  #f]
-                 [else (action 'move src n)])])
-        (loop (cdr entries)
-          (hashset-insert seen id)
-          (if c (cons c acc) acc)))))
-
-  (define-values (actions seen) (loop dest (hashset) '()))
-
-  (define deletes
-    (transduce dirs
-      (compose
-        (flat-mapping entries-in)
-        (filtering (fn (src) (not (hashset-contains? seen (entry-id src)))))
-        (mapping (fn (src) (action 'delete src #f))))
-      (into-list)))
-  
-  (concat actions deletes))
-
-(define (confirm! lines on-confirm)
-  (define prompt "[Y]es  [N]o")
-  (define width (foldl max 0 (map string-length (cons prompt lines))))
-  (define spacing
-    (make-string (quotient (- width (string-length prompt)) 2) #\space))
-  (define state (concat lines (list "\n" (string-append spacing prompt))))
-  (define (close!)
-    (set-box! *preview-open* #f)
-    event-result/close)
-  (define component
-    (new-component! "oil-preview"
-      state
-      (fn (state rect frame)
-        (define inner (popup-area state rect))
-        (buffer/clear-with frame inner (theme-scope-ref "ui.popup"))
-        (widget/list/render frame
-          (area
-            (+ (area-x inner) 1)
-            (+ (area-y inner) 1)
-            (- (area-width inner) 2)
-            (- (area-height inner) 2))
-          (widget/list state)))
-      (hash "handle_event"
-        (fn (state event)
-          (define c (key-event-char event))
-          (cond
-            [(and on-confirm (or (equal? c #\y) (equal? c #\Y)))
-             (on-confirm)
-             (close!)]
-            [(or (equal? c #\n) (equal? c #\N) (key-event-escape? event))
-             (close!)]
-            [else event-result/consume])))))
-  (set-box! *preview-open* #t)
-  (push-component! component))
-
-(define (popup-area lines rect)
-  (let ([w (min (+ 2 (foldl max 0 (map string-length lines)))
-                (area-width rect))]
-        [h (min (+ 2 (length lines))
-                (area-height rect))])
-    (area
-      (+ (area-x rect) (quotient (- (area-width rect) w) 2))
-      (+ (area-y rect) (quotient (- (area-height rect) h) 2))
-      w
-      h)))
 
 ;; #t if `cmd` exited 0; anything else is reported on the status line
 (define (run! cmd args)
@@ -354,19 +219,12 @@
       (set-status! (string-append "oil: " cmd " exited " (number->string status)))
       #f)))
 
-;; drop `e` from its parent's listing (entries-by-id untouched)
-(define (cache-unlist! e)
-  (define parent (entry-parent e))
-  (box-update! *directory-cache*
-    (fn (cache)
-      (hash-insert cache parent (hash-remove (list-url parent) (entry-name e))))))
-
 (define (create-path! e)
   (define (create-file! path)
     (close-output-port (open-output-file path)))
   (if (directory? e)
     (create-directory! (entry->path e))
-    (create-file! (entry->path e))))
+    (close-output-port (open-output-file (entry->path e)))))
 
 ;; a symlink is unlinked like a file, whatever it points at
 (define (delete-path! e)
@@ -375,17 +233,23 @@
     (delete-file! (entry->path e))))
 
 (define (cache-add! e)
-  (create-entry! (entry-parent e) (entry-name e) (entry-type e)))
+  (store-entry!
+    (entry (gen-id!)
+           (entry-parent e)
+           (entry-name e)
+           (entry-type e)
+           #f)))
 
 (define (cache-move! src dest)
-  (cache-unlist! src)
-  (set-entry-parent! src (entry-parent dest))
-  (set-entry-name! src (entry-name dest))
-  (store-entry! src))
+  (store-entry!
+    (entry (entry-id src)
+           (entry-parent dest)
+           (entry-name dest)
+           (entry-type src)
+           (entry-metadata src))))
 
 (define (cache-remove! e)
-  (cache-unlist! e)
-  (forget-entry! e))
+  (box-update! *entries* (fn (cache) (hash-remove cache (entry-id e)))))
 
 ;; runs one action and mirrors it in the cache, so ids survive moves and no
 ;; re-read is needed afterwards; #f if the disk operation failed
@@ -431,23 +295,17 @@
     (undo)
     (ignore-next-save! doc-id)
     (hx.write!))
-  (with-delay 50 (clear-status!))
+  (with-delay 50 (set-status! ""))
   (schedule (with-doc doc-id (redo))))
 
 (fun oil-save! :: (doc-id doc-id? -> void?)
-  (define docs
-    (foldl
-      (fn (p acc)
-          (hash-insert acc (cdr p) (car p)))
-      (hash)
-      (hash-values->list (unbox *oil-docs*))))
+  (define docs (oil-docs-by-dir))
   (define dirs (hash-keys->list docs))
-  (define entries (oil-docs->entries docs dirs))
-  (match-result entries
-    [(Ok entries) (try-write! doc-id docs dirs
-                   (order-actions
-                     (diff-entries dirs entries)))]
-    [(Err err) (with-delay 50 (set-error! (string-append "oil: " err)))]))
+  (match-result (oil-docs->entries docs dirs)
+    [entries (try-write! doc-id docs dirs
+               (order-actions
+                 (entries->actions (unbox *entries*) dirs entries)))]
+    [err (with-delay 50 (set-error! (string-append "oil: " err)))]))
 
 (define (try-write! doc-id docs dirs actions)
   (define problems (validate-actions actions))

@@ -4,11 +4,7 @@
          entry-parent
          entry-name
          entry-type
-         entry-metadata
-         set-entry-parent!
-         set-entry-name!
-         set-entry-type!
-         set-entry-metadata!)
+         entry-metadata)
 
 ;; A single filesystem entry tracked by oil.
 ;;
@@ -20,5 +16,7 @@
 ;;   type     - 'file | 'directory | 'link
 ;;   metadata - #f, or a hash of adapter-provided extras (size, mtime, ...)
 ;;
-;; `id` deliberately has no exported setter.
-(struct entry (id parent name type metadata) #:mutable #:transparent)
+;; Entries are immutable so a cache value is a real snapshot of the original
+;; filesystem state. Cache updates replace entries instead of changing values
+;; that may also be referenced by a pending action.
+(struct entry (id parent name type metadata) #:transparent)

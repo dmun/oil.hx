@@ -3,7 +3,11 @@
          false?
          concat
          box-update!
-         match-result)
+         match-result
+         with-delay
+         with-doc
+         schedule
+         dbg!)
 
 ;; Haskell-ish notation for define/contract:
 ;;
@@ -34,17 +38,16 @@
 
 (define (false? v) (equal? v #f))
 
-;; `(append a b)`, built from cons: steel 0.8.2's `append` corrupts 5-8 element
-;; lists coming out of map/filter chains (length ok, iterates as empty)
+;; append kapoet
 (define (concat a b) (foldl cons b (reverse a)))
 
 (define (box-update! b f) (set-box! b (f (unbox b))))
 
 (define-syntax match-result
-  (syntax-rules (Ok Err)
-    ((_ expr
-        ((Ok val) ok-body ...)
-        ((Err err) err-body ...))
+  (syntax-rules ()
+    [(_ expr
+        (val ok-body ...)
+        (err err-body ...))
      (let ((result expr))
        (cond
          ((Ok? result)
@@ -52,5 +55,36 @@
             ok-body ...))
          ((Err? result)
           (let ((err (Err->value result)))
-            err-body ...)))))))
+            err-body ...))))]))
 
+(define-syntax with-delay
+  (syntax-rules ()
+                ((_ delay body ...)
+                 (enqueue-thread-local-callback-with-delay
+                  delay
+                  (fn () body ...)))))
+
+(define-syntax schedule
+  (syntax-rules ()
+                ((_ body ...)
+                 (enqueue-thread-local-callback
+                  (fn () body ...)))))
+
+;; run command that rely on focused doc
+(define-syntax with-doc
+  (syntax-rules ()
+                ((_ doc-id body ...)
+                 (let ([prev (editor->doc-id (editor-focus))])
+                   (if (equal? (doc-id->usize prev) (doc-id->usize doc-id))
+                     ((fn () body ...))
+                     (begin
+                       (editor-switch-action! doc-id (Action/Replace))
+                       ((fn () body ...))
+                       (editor-switch-action! prev (Action/Replace))))))))
+
+(define-syntax dbg!
+  (syntax-rules ()
+    [(_ expr)
+     (let ([v expr])
+       (log::debug! (list 'expr '=> v))
+       v)]))
