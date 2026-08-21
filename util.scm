@@ -19,11 +19,31 @@
 
 ;; peels the signature one argument at a time, collecting names and contracts
 (define-syntax fun-build
-  (syntax-rules (->)
-    ;; only the return contract is left
+  (syntax-rules (-> void?)
+    ;; void-returning functions implicitly end in `void`
+    [(fun-build name (void?) (arg ...) (contract ...) body ...)
+     (define/contract (name arg ...)
+       (->/c contract ... void?)
+       body ...
+       void)]
+
+    [(fun-build name ((Result/c void? err)) (arg ...) (contract ...) body ...)
+     (define/contract (name arg ...)
+       (->/c contract ... (Result/c void? err))
+       body ...
+       (Ok void))]
+
+    ;; generic return contract
     [(fun-build name (return) (arg ...) (contract ...) body ...)
-     (define/contract (name arg ...) (->/c contract ... return) body ...)]
-    [(fun-build name (next-arg next-contract -> rest ...) (arg ...) (contract ...) body ...)
+     (define/contract (name arg ...)
+       (->/c contract ... return)
+       body ...)]
+
+    [(fun-build name
+                (next-arg next-contract -> rest ...)
+                (arg ...)
+                (contract ...)
+                body ...)
      (fun-build name
                 (rest ...)
                 (arg ... next-arg)

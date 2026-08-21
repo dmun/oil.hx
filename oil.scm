@@ -143,24 +143,27 @@
     (text.rope->string (editor->text doc-id)))
   (define (loop remaining parsed)
     (if (empty? remaining)
-      (Ok parsed)
+      (Ok (reverse parsed))
       (let ([dir (car remaining)])
         (ok-and-then (oil-doc->entries dir (buffer-text (hash-ref docs dir)))
           (fn (entries) (loop (cdr remaining) (append (reverse entries) parsed)))))))
   (loop dirs '()))
 
 ;; #t if `cmd` exited 0; anything else is reported on the status line
-(define (run! cmd args)
-  (define status (unwrap-ok (wait (unwrap-ok (spawn-process (command cmd args))))))
-  (if (equal? status 0)
-    #t
-    (begin
-      (set-status! (string-append "oil: " cmd " exited " (number->string status)))
-      #f)))
+(fun run! :: (cmd string? -> args (listof string?) -> (Result/c void? string?))
+  (ok-and-then
+    (spawn-process (command cmd args))
+    (fn (child)
+      (ok-and-then
+        (wait child)
+        (fn (status)
+          (if (equal? status 0)
+            (Ok void)
+            (Err
+              (string-append
+                "oil: " cmd " exited " (number->string status)))))))))
 
 (define (create-path! e)
-  (define (create-file! path)
-    (close-output-port (open-output-file path)))
   (if (directory? e)
     (create-directory! (entry->path e))
     (close-output-port (open-output-file (entry->path e)))))
@@ -189,10 +192,11 @@
          (delete-path! src)
          (cache-remove! src)]
         [(copy)
-         (run! "cp" (list "-a" (entry->path src) (entry->path dest)))
-         (cache-add! dest)]
-        [else (error "oil: unknown action " (symbol->string (action-kind c)))])
-     (Ok void))))
+         (ok-and-then
+           (run! "cp" (list "-a" (entry->path src) (entry->path dest)))
+           (fn (_)
+             (cache-add! dest)))]
+        [else (error "oil: unknown action " (symbol->string (action-kind c)))]))))
 
 ;; stops at the first failure, so the cache never describes a filesystem that
 ;; isn't there TODO
