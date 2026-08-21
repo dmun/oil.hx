@@ -9,6 +9,7 @@
 (require (prefix-in hx. "helix/commands.scm"))
 
 (require "entry.scm")
+(require "cache.scm")
 (require "action.scm")
 (require "ui.scm")
 (require "util.scm")
@@ -18,9 +19,6 @@
 
 ;; doc-id usizes whose next 'document-saved is our own write, not the user's
 (define *oil-ignore* (box (hash)))
-
-(define *next-id* (box 1))
-(define *entries* (box (hash)))
 
 (provide oil-open oil-parent)
 
@@ -44,60 +42,6 @@
       (set-document-lines! (oil-listing-lines dir))
       (ignore-next-save! doc-id)
       (hx.write!))))
-
-(define (read-dir-entry-file-type e)
-  (cond
-    [(read-dir-entry-is-symlink? e) 'link]
-    [(read-dir-entry-is-dir? e) 'directory]
-    [else 'file]))
-
-;; unordered
-(fun entries-in :: (cache hash? -> parent string? -> (listof entry?))
-  (filter
-    (fn (e) (equal? (entry-parent e) parent))
-    (hash-values->list cache)))
-
-(fun store-entry! :: (e entry? -> any/c)
-  (box-update! *entries*
-    (fn (cache) (hash-insert cache (entry-id e) e))))
-
-;; Replaces one directory's slice of the canonical cache in one update.
-(define (replace-directory! parent entries)
-  (define retained
-    (foldl
-      (fn (e cache)
-        (if (equal? (entry-parent e) parent)
-          cache
-          (hash-insert cache (entry-id e) e)))
-      (hash)
-      (hash-values->list (unbox *entries*))))
-  (set-box! *entries*
-    (foldl
-      (fn (e cache) (hash-insert cache (entry-id e) e))
-      retained
-      entries)))
-
-(define (add-entries! path)
-  (define previous
-    (foldl
-      (fn (e by-name) (hash-insert by-name (entry-name e) e))
-      (hash)
-      (entries-in (unbox *entries*) path)))
-  (define iter (read-dir-iter path))
-  (define (loop found)
-    (let ([e (read-dir-iter-next! iter)])
-      (if e
-        (let* ([name (read-dir-entry-file-name e)]
-               [old (hash-try-get previous name)]
-               [fresh (entry
-                        (if old (entry-id old) (gen-id!))
-                        path
-                        name
-                        (read-dir-entry-file-type e)
-                        (if old (entry-metadata old) #f))])
-          (loop (cons fresh found)))
-        (replace-directory! path (reverse found)))))
-  (loop '()))
 
 (define (oil-open)
   (hx.open (oil-tmp-path (current-directory))))
@@ -130,7 +74,7 @@
     (if (> need 0) (string-append (make-string need #\0) s) s))
   (map (fn (entry)
         (string-append "/" (pad-id (entry-id entry) 3) " " (oil-render-name entry)))
-    (sort (entries-in (unbox *entries*) dir) entry<?)))
+    (sort (cache-entries-in dir) entry<?)))
 
 ;; directories first, then alphabetic
 (define (entry<? a b)
@@ -149,11 +93,6 @@
       (Err "failed to parse oil id"))
     (Ok (string->int (list->string (string->list id 1))))))
 
-(fun gen-id! :: (int?)
-  (define id (unbox *next-id*))
-  (set-box! *next-id* (+ id 1))
-  id)
-
 (fun oil-name-type :: (name string? -> symbol?)
   (if (ends-with? name "/") 'directory 'file))
 
@@ -166,7 +105,7 @@
     (entry-name e)))
 
 (fun oil-new-entry :: (dir string? -> name string? -> entry?)
-  (entry (gen-id!) dir (oil-bare-name name) (oil-name-type name) #f))
+  (entry (cache-next-id!) dir (oil-bare-name name) (oil-name-type name) #f))
 
 ;; "/007 name" is the entry with that id; anything else is a name the user
 ;; typed, spaces and all
@@ -232,25 +171,6 @@
     (delete-directory! (entry->path e))
     (delete-file! (entry->path e))))
 
-(define (cache-add! e)
-  (store-entry!
-    (entry (gen-id!)
-           (entry-parent e)
-           (entry-name e)
-           (entry-type e)
-           #f)))
-
-(define (cache-move! src dest)
-  (store-entry!
-    (entry (entry-id src)
-           (entry-parent dest)
-           (entry-name dest)
-           (entry-type src)
-           (entry-metadata src))))
-
-(define (cache-remove! e)
-  (box-update! *entries* (fn (cache) (hash-remove cache (entry-id e)))))
-
 ;; runs one action and mirrors it in the cache, so ids survive moves and no
 ;; re-read is needed afterwards; #f if the disk operation failed
 (fun action-apply! :: (c action? -> (Result/c void? string?))
@@ -304,7 +224,7 @@
   (match-result (oil-docs->entries docs dirs)
     [entries (try-write! doc-id docs dirs
                (order-actions
-                 (entries->actions (unbox *entries*) dirs entries)))]
+                 (entries->actions (cache-snapshot) dirs entries)))]
     [err (with-delay 50 (set-error! (string-append "oil: " err)))]))
 
 (define (try-write! doc-id docs dirs actions)
@@ -326,7 +246,7 @@
         (fn (docs) (hash-insert docs (doc-id->usize doc-id) (cons doc-id dir))))
       (schedule
         (when (editor-doc-exists? doc-id)
-          (add-entries! dir)
+          (cache-refresh-dir! dir)
           (with-doc doc-id
             (set-buffer-uri! (string-append "oil://" dir)))
           ;; also persists, so tmp parent dirs exist and a plain :w works
