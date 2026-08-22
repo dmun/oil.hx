@@ -227,21 +227,24 @@
      (define docs (oil-docs-by-dir))
      (define dirs (hash-keys->list docs))
      (match-result (oil-docs->entries docs dirs)
-                   [entries (try-write! doc-id docs dirs
-                                        (order-actions
-                                          (entries->actions (cache-snapshot) dirs entries)))]
-                   [err (with-delay 50 (set-error! (string-append "oil: " err)))]))
+       [entries (try-write! doc-id docs dirs
+                            (order-actions
+                              (entries->actions (cache-snapshot) dirs entries)))]
+       [err (with-delay 50 (set-error! (string-append "oil: " err)))]))
 
 (define (try-write! doc-id docs dirs actions)
-  (define problems (validate-actions actions))
-  (restore-doc! doc-id)
-  (if (empty? problems)
-    (confirm! (map action->string actions)
-              (fn ()
-                  (actions-apply! actions)
-                  (schedule
-                    (for-each (fn (dir) (oil-render! (hash-ref docs dir) dir)) dirs))))
-    (with-delay 50 (set-error! (car problems)))))
+  (let ([problems (validate-actions actions)])
+    (cond
+      [(empty? actions)
+       (with-delay 50 (set-status! "oil: no changes"))]
+      [(empty? problems)
+       (restore-doc! doc-id)
+       (confirm! (map action->string actions)
+             (fn ()
+                 (actions-apply! actions)
+                 (schedule
+                   (for-each (fn (dir) (oil-render! (hash-ref docs dir) dir)) dirs))))]
+      [else (with-delay 50 (set-error! (car problems)))])))
 
 (register-hook 'document-opened
                (fn (doc-id)
