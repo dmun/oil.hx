@@ -1,5 +1,10 @@
+(require "steel/result")
+
+(require "macros.scm")
 (require "util.scm")
+
 (require "entry.scm")
+(require "cache.scm")
 
 (provide action
          action?
@@ -10,7 +15,8 @@
          action->string
          entries->actions
          order-actions
-         validate-actions)
+         validate-actions
+         actions-apply!)
 
 ;; A single pending filesystem operation, produced by diffing parsed oil
 ;; documents against the entry cache.
@@ -219,3 +225,64 @@
               (action-effect c state)
               (foldl cons found problems)))))
   (loop actions (hash) '()))
+
+;; #t if `cmd` exited 0; anything else is reported on the status line
+(fun run! :: (cmd string? -> args (listof string?) -> (Result/c void? string?))
+     (ok-and-then
+       (spawn-process (command cmd args))
+       (fn (child)
+           (ok-and-then
+             (wait child)
+             (fn (status)
+                 (if (equal? status 0)
+                   (Ok void)
+                   (Err
+                     (string-append
+                       "oil: " cmd " exited " (number->string status)))))))))
+
+(define (create-path! e)
+  (if (directory? e)
+    (create-directory! (entry->path e))
+    (close-output-port (open-output-file (entry->path e)))))
+
+;; a symlink is unlinked like a file, whatever it points at
+(define (delete-path! e)
+  (if (directory? e)
+    (delete-directory! (entry->path e))
+    (delete-file! (entry->path e))))
+
+;; runs one action and mirrors it in the cache, so ids survive moves and no
+;; re-read is needed afterwards; #f if the disk operation failed
+(fun action-apply! :: (c action? -> (Result/c void? string?))
+     (with-handler
+       (fn (err) (Err err))
+       (let ([src (action-src c)]
+             [dest (action-dest c)])
+         (case (action-kind c)
+           [(create)
+            (create-path! dest)
+            (cache-add! dest)]
+           [(move)
+            (rename-file-or-directory! (entry->path src) (entry->path dest))
+            (cache-move! src dest)]
+           [(delete)
+            (delete-path! src)
+            (cache-remove! src)]
+           [(copy)
+            (ok-and-then
+              (run! "cp" (list "-a" (entry->path src) (entry->path dest)))
+              (fn (_)
+                  (cache-add! dest)))]
+           [else (error "oil: unknown action " (symbol->string (action-kind c)))]))))
+
+;; stops at the first failure, so the cache never describes a filesystem that
+;; isn't there TODO
+(fun actions-apply! :: (actions (listof action?) -> (Result/c void? string?))
+     (define (loop remaining)
+       (if (empty? remaining)
+         (Ok void)
+         (ok-and-then (action-apply! (car remaining))
+                      (fn (_) (loop (cdr remaining))))))
+     (loop actions))
+
+

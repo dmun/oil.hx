@@ -8,11 +8,14 @@
 
 (require (prefix-in hx. "helix/commands.scm"))
 
+(require "document.scm")
+(require "util.scm")
+(require "macros.scm")
+
 (require "entry.scm")
 (require "cache.scm")
 (require "action.scm")
 (require "ui.scm")
-(require "util.scm")
 (require "cursor.scm")
 
 ;; doc-id usize -> (doc-id . directory url)
@@ -21,16 +24,11 @@
 ;; doc-id usizes whose next 'document-saved is our own write, not the user's
 (define *oil-ignore* (box (hash)))
 
-(provide oil-open oil-parent)
-
 (define (set-document-lines! lines)
   (select_all)
   (replace-selection-with
     ;; trailing newline to avoid extra write if 'insert-final-newline' set
     (string-append (string-join lines "\n") "\n")))
-
-(define (doc-id? v)
-  (with-handler (fn (_) #f) (begin (doc-id->usize v) #t)))
 
 (define (ignore-next-save! doc-id)
   (box-update! *oil-ignore*
@@ -42,19 +40,30 @@
     (with-doc doc-id
               (set-document-lines! (oil-listing-lines dir))
               (ignore-next-save! doc-id)
-              (hx.write!))))
+              (hx.write!))
+    (with-delay 50 (set-status! ""))
+    (position-oil-target! doc-id dir)))
 
-(define (oil-open)
-  (hx.open (oil-tmp-path (current-directory))))
+(fun olive-open :: (void?)
+  (define source-path
+    (editor-document->path (editor->doc-id (editor-focus))))
+  (define dir (current-directory))
+  (define target (and source-path (file-name source-path)))
+  (define existing-doc (hash-try-get (oil-docs-by-dir) dir))
+  (set-box! *oil-target* (and target (cons dir target)))
+  (hx.open (oil-tmp-path dir))
+  (when existing-doc
+    (schedule
+      (position-oil-target! existing-doc dir))))
 
 ;; from an oil buffer: go up; from a file: open its directory
-(define (oil-parent)
+(fun olive-parent :: (void?)
   (define path (editor-document->path (editor->doc-id (editor-focus))))
   (define dir (or (oil-tmp->dir path) path (current-directory)))
   (hx.open (oil-tmp-path (parent-name dir))))
 
 (define oil-tmp-prefix "/tmp/oil")
-(define oil-tmp-suffix ".d")
+(define oil-tmp-suffix ".oil")
 
 (define (oil-tmp-path dir)
   (string-append oil-tmp-prefix dir oil-tmp-suffix))
@@ -84,9 +93,6 @@
   (if (equal? dir-a dir-b)
     (string<? (entry-name a) (entry-name b))
     dir-a))
-
-(fun directory? :: (e entry? -> boolean?)
-     (equal? (entry-type e) 'directory))
 
 (fun oil-string-id->int :: (id string? -> (Result/c int? string?))
      (with-handler
@@ -149,65 +155,6 @@
            (ok-and-then (oil-doc->entries dir (buffer-text (hash-ref docs dir)))
                         (fn (entries) (loop (cdr remaining) (append (reverse entries) parsed)))))))
      (loop dirs '()))
-
-;; #t if `cmd` exited 0; anything else is reported on the status line
-(fun run! :: (cmd string? -> args (listof string?) -> (Result/c void? string?))
-     (ok-and-then
-       (spawn-process (command cmd args))
-       (fn (child)
-           (ok-and-then
-             (wait child)
-             (fn (status)
-                 (if (equal? status 0)
-                   (Ok void)
-                   (Err
-                     (string-append
-                       "oil: " cmd " exited " (number->string status)))))))))
-
-(define (create-path! e)
-  (if (directory? e)
-    (create-directory! (entry->path e))
-    (close-output-port (open-output-file (entry->path e)))))
-
-;; a symlink is unlinked like a file, whatever it points at
-(define (delete-path! e)
-  (if (directory? e)
-    (delete-directory! (entry->path e))
-    (delete-file! (entry->path e))))
-
-;; runs one action and mirrors it in the cache, so ids survive moves and no
-;; re-read is needed afterwards; #f if the disk operation failed
-(fun action-apply! :: (c action? -> (Result/c void? string?))
-     (with-handler
-       (fn (err) (Err err))
-       (let ([src (action-src c)]
-             [dest (action-dest c)])
-         (case (action-kind c)
-           [(create)
-            (create-path! dest)
-            (cache-add! dest)]
-           [(move)
-            (rename-file-or-directory! (entry->path src) (entry->path dest))
-            (cache-move! src dest)]
-           [(delete)
-            (delete-path! src)
-            (cache-remove! src)]
-           [(copy)
-            (ok-and-then
-              (run! "cp" (list "-a" (entry->path src) (entry->path dest)))
-              (fn (_)
-                  (cache-add! dest)))]
-           [else (error "oil: unknown action " (symbol->string (action-kind c)))]))))
-
-;; stops at the first failure, so the cache never describes a filesystem that
-;; isn't there TODO
-(fun actions-apply! :: (actions (listof action?) -> (Result/c void? string?))
-     (define (loop remaining)
-       (if (empty? remaining)
-         (Ok void)
-         (ok-and-then (action-apply! (car remaining))
-                      (fn (_) (loop (cdr remaining))))))
-     (loop actions))
 
 (define (oil-docs-by-dir)
   (foldl (fn (p acc) (hash-insert acc (cdr p) (car p)))

@@ -1,6 +1,7 @@
 (require "helix/misc.scm")
 (require "helix/components.scm")
 
+(require "macros.scm")
 (require "util.scm")
 
 (provide confirm!

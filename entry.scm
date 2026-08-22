@@ -1,10 +1,13 @@
+(require "macros.scm")
+
 (provide entry
          entry?
          entry-id
          entry-parent
          entry-name
          entry-type
-         entry-metadata)
+         entry-metadata
+         directory?)
 
 ;; A single filesystem entry tracked by oil.
 ;;
@@ -20,3 +23,6 @@
 ;; filesystem state. Cache updates replace entries instead of changing values
 ;; that may also be referenced by a pending action.
 (struct entry (id parent name type metadata) #:transparent)
+
+(fun directory? :: (e entry? -> boolean?)
+     (equal? (entry-type e) 'directory))

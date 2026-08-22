@@ -1,5 +1,6 @@
 (require "entry.scm")
 (require "util.scm")
+(require "macros.scm")
 
 (provide cache-snapshot
          cache-entries-in
