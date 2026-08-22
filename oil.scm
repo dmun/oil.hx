@@ -13,6 +13,7 @@
 (require "action.scm")
 (require "ui.scm")
 (require "util.scm")
+(require "cursor.scm")
 
 ;; doc-id usize -> (doc-id . directory url)
 (define *oil-docs* (box (hash)))
@@ -266,80 +267,11 @@
   (hash-contains? (unbox *oil-docs*)
                   (doc-id->usize doc-id)))
 
-(define (rope-char->col rope pos)
-  (- pos
-     (rope-line->char
-       rope
-       (rope-char->line rope pos))))
-
-(define oil-min-cursor-col 5)
-
-;; A forward range's head is after its block cursor; a backward range's head
-;; is the cursor.  The protected prefix is ASCII, so stepping back one char is
-;; sufficient for any cursor that can be to its left.
-(define (range-cursor-pos r)
-  (let ([anchor (range-anchor r)]
-        [head (range-head r)])
-    (if (> head anchor) (- head 1) head)))
-
-(define (oil-range-adjust-target rope r)
-  (let* ([cursor (range-cursor-pos r)]
-         [line (rope-char->line rope cursor)]
-         [line-start (rope-line->char rope line)]
-         [boundary (+ line-start oil-min-cursor-col)]
-         [line-length (rope-len-chars (rope->line rope line))])
-    ;; Short lines (notably the trailing empty line) have no valid position at
-    ;; the boundary.  Leave them alone until the boundary exists.
-    (and (< cursor boundary)
-         (< oil-min-cursor-col line-length)
-         ;; Moving forward past an end-of-line lands at column zero of the
-         ;; next line, so advance that cursor to its editable boundary.  Other
-         ;; positions in the prefix come from backward motions such as `h` or
-         ;; `b` and wrap to the preceding line.  The first line cannot wrap.
-         (if (or (= cursor line-start)
-                 (= line 0))
-           boundary
-           (- line-start 1)))))
-
-(define (adjust-oil-range rope r)
-  (let ([target (oil-range-adjust-target rope r)])
-    (if target (range target target) r)))
-
-(define (any? predicate values)
-  (and (not (empty? values))
-       (or (predicate (car values))
-           (any? predicate (cdr values)))))
-
-;; The mutating selection API makes every pushed range primary.  Add the
-;; original primary last so it remains primary after Helix normalizes ranges.
-(define (primary-last ranges primary-index)
-  (define (loop remaining index others primary)
-    (if (empty? remaining)
-      (append (reverse others) (list primary))
-      (if (= index primary-index)
-        (loop (cdr remaining) (+ index 1) others (car remaining))
-        (loop (cdr remaining) (+ index 1) (cons (car remaining) others) primary))))
-  (loop ranges 0 '() #f))
-
-(define (set-oil-ranges! ranges primary-index)
-  (let ([ordered (primary-last ranges primary-index)])
-    (set-current-selection-object! (range->selection (car ordered)))
-    (for-each push-range-to-selection! (cdr ordered))))
-
 (register-hook 'selection-did-change
                (fn (view-id)
-                   ;; The selection mutation API operates on the focused view, while this
-                   ;; hook can also report changes from another view of the same document.
                    (when (and (equal? view-id (editor-focus))
                               (oil-doc? (editor->doc-id view-id)))
-                     (let* ([rope (editor->text (editor->doc-id view-id))]
-                            [selection (current-selection-object)]
-                            [ranges (selection->ranges selection)]
-                            [adjusted (map (fn (r) (adjust-oil-range rope r)) ranges)])
-                       ;; Avoid recursively firing the hook when every cursor is already in
-                       ;; bounds.  Each violating multicursor is transformed independently.
-                       (when (any? (fn (r) (oil-range-adjust-target rope r)) ranges)
-                         (set-oil-ranges! adjusted (selection->primary-index selection)))))))
+                     (clamp-cursors! view-id))))
 
 (register-hook 'document-saved
                (fn (doc-id)
