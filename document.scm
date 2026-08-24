@@ -7,7 +7,7 @@
 (provide *olive-target*)
 (define *olive-target* (box #f))
 
-(provide-fun position-olive-target! :: (doc-id doc-id? -> dir string? -> void?)
+(fun/provide position-olive-target! :: (doc-id doc-id? -> dir string? -> void?)
   (define pending (unbox *olive-target*))
   (define target (and pending (equal? (car pending) dir) (cdr pending)))
   (when (and target

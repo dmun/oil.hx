@@ -8,16 +8,16 @@
   concat
   box-update!)
 
-(provide-fun doc-id? :: (v any/c -> bool?)
+(fun/provide doc-id? :: (v any/c -> bool?)
   (with-handler (fn (_) #f) (begin (doc-id->usize v) #t)))
 
-(provide-fun escape-regex :: (char char? -> string?)
+(fun/provide escape-regex :: (char char? -> string?)
   (let ([chars (string->list "\\.+*?()|[]{}^$#&-~")])
     (if (member char chars)
       (string #\\ char)
       (string char))))
 
-(provide-fun escape-regex-string :: (text string? -> string?)
+(fun/provide escape-regex-string :: (text string? -> string?)
   (apply string-append (map escape-regex (string->list text))))
 
 (define (false? v) (equal? v #f))

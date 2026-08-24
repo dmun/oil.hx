@@ -1,5 +1,5 @@
 (provide fun
-         provide-fun
+         fun/provide
          match-result
          with-delay
          with-doc
@@ -15,33 +15,27 @@
 ;; it is one `name contract ->` per argument.
 
 ;; peels the signature one argument at a time, collecting names and contracts
-(define-syntax fun-build
+(define-syntax fun/parse
   (syntax-rules (-> void?)
     ;; void-returning functions implicitly end in `void`
-    [(fun-build name (void?) (arg ...) (contract ...) body ...)
-     (define/contract (name arg ...)
-       (->/c contract ... void?)
-       body ...
-       void)]
-
-    [(fun-build name ((Result/c void? err)) (arg ...) (contract ...) body ...)
+    [(fun/parse name ((Result/c void? err)) (arg ...) (contract ...) body ...)
      (define/contract (name arg ...)
        (->/c contract ... (Result/c void? err))
        body ...
        (Ok void))]
 
     ;; generic return contract
-    [(fun-build name (return) (arg ...) (contract ...) body ...)
+    [(fun/parse name (return) (arg ...) (contract ...) body ...)
      (define/contract (name arg ...)
        (->/c contract ... return)
        body ...)]
 
-    [(fun-build name
+    [(fun/parse name
                 (next-arg next-contract -> rest ...)
                 (arg ...)
                 (contract ...)
                 body ...)
-     (fun-build name
+     (fun/parse name
                 (rest ...)
                 (arg ... next-arg)
                 (contract ... next-contract)
@@ -50,13 +44,13 @@
 (define-syntax fun
   (syntax-rules (::)
     [(fun name :: signature body ...)
-     (fun-build name signature () () body ...)]))
+     (fun/parse name signature () () body ...)]))
 
-(define-syntax provide-fun
+(define-syntax fun/provide
   (syntax-rules (::)
-    [(provide-fun name :: signature body ...)
+    [(fun/provide name :: signature body ...)
      (begin
-       (fun-build name signature () () body ...)
+       (fun/parse name signature () () body ...)
        (provide name))]))
 
 (define-syntax match-result
