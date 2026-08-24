@@ -9,7 +9,7 @@
          entry-metadata
          directory?)
 
-;; A single filesystem entry tracked by oil.
+;; A single filesystem entry tracked by olive.
 ;;
 ;;   id       - stable integer identity, rendered as the /NNN prefix in the
 ;;              buffer. Never changes for the lifetime of the entry, which is

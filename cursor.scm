@@ -4,28 +4,28 @@
 
 (provide clamp-cursors!)
 
-(define oil-min-cursor-col 5)
+(define olive-min-cursor-col 5)
 
 (define (range-cursor-pos r)
   (let ([anchor (range-anchor r)]
         [head (range-head r)])
     (if (> head anchor) (- head 1) head)))
 
-(define (oil-range-adjust-target rope r)
+(define (olive-range-adjust-target rope r)
   (let* ([cursor (range-cursor-pos r)]
          [line (rope-char->line rope cursor)]
          [line-start (rope-line->char rope line)]
-         [boundary (+ line-start oil-min-cursor-col)]
+         [boundary (+ line-start olive-min-cursor-col)]
          [line-length (rope-len-chars (rope->line rope line))])
     (and (< cursor boundary)
-         (< oil-min-cursor-col line-length)
+         (< olive-min-cursor-col line-length)
          (if (or (= cursor line-start)
                  (= line 0))
            boundary
            (- line-start 1)))))
 
-(define (adjust-oil-range rope r)
-  (let ([target (oil-range-adjust-target rope r)])
+(define (adjust-olive-range rope r)
+  (let ([target (olive-range-adjust-target rope r)])
     (if target (range target target) r)))
 
 (define (any? predicate values)
@@ -42,7 +42,7 @@
         (loop (cdr remaining) (+ index 1) (cons (car remaining) others) primary))))
   (loop ranges 0 '() #f))
 
-(define (set-oil-ranges! ranges primary-index)
+(define (set-olive-ranges! ranges primary-index)
   (let ([ordered (primary-last ranges primary-index)])
     (set-current-selection-object! (range->selection (car ordered)))
     (for-each push-range-to-selection! (cdr ordered))))
@@ -51,6 +51,6 @@
   (let* ([rope (editor->text (editor->doc-id view-id))]
          [selection (current-selection-object)]
          [ranges (selection->ranges selection)]
-         [adjusted (map (fn (r) (adjust-oil-range rope r)) ranges)])
-     (when (any? (fn (r) (oil-range-adjust-target rope r)) ranges)
-       (set-oil-ranges! adjusted (selection->primary-index selection)))))
+         [adjusted (map (fn (r) (adjust-olive-range rope r)) ranges)])
+     (when (any? (fn (r) (olive-range-adjust-target rope r)) ranges)
+       (set-olive-ranges! adjusted (selection->primary-index selection)))))

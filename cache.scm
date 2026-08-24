@@ -11,7 +11,7 @@
          cache-remove!)
 
 ;; The canonical snapshot of filesystem entries. Entries keep stable IDs across
-;; directory refreshes and moves so edited oil buffers can be diffed reliably.
+;; directory refreshes and moves so edited olive buffers can be diffed reliably.
 (define *next-id* (box 1))
 (define *entries* (box (hash)))
 

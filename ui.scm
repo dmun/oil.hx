@@ -30,7 +30,7 @@
     (set-box! *preview-open* #f)
     event-result/close)
   (define component
-    (new-component! "oil-preview"
+    (new-component! "olive-preview"
       state
       (fn (state rect frame)
         (define inner (popup-area state rect))

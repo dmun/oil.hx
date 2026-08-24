@@ -18,7 +18,7 @@
          validate-actions
          actions-apply!)
 
-;; A single pending filesystem operation, produced by diffing parsed oil
+;; A single pending filesystem operation, produced by diffing parsed olive
 ;; documents against the entry cache.
 ;;
 ;;   kind - 'create | 'delete | 'move | 'copy
@@ -238,7 +238,7 @@
                    (Ok void)
                    (Err
                      (string-append
-                       "oil: " cmd " exited " (number->string status)))))))))
+                       "olive: " cmd " exited " (number->string status)))))))))
 
 (define (create-path! e)
   (if (directory? e)
@@ -273,7 +273,7 @@
               (run! "cp" (list "-a" (entry->path src) (entry->path dest)))
               (fn (_)
                   (cache-add! dest)))]
-           [else (error "oil: unknown action " (symbol->string (action-kind c)))]))))
+           [else (error "olive: unknown action " (symbol->string (action-kind c)))]))))
 
 ;; stops at the first failure, so the cache never describes a filesystem that
 ;; isn't there TODO

@@ -4,11 +4,11 @@
 (require "util.scm")
 (require "macros.scm")
 
-(provide *oil-target*)
-(define *oil-target* (box #f))
+(provide *olive-target*)
+(define *olive-target* (box #f))
 
-(provide-fun position-oil-target! :: (doc-id doc-id? -> dir string? -> void?)
-  (define pending (unbox *oil-target*))
+(provide-fun position-olive-target! :: (doc-id doc-id? -> dir string? -> void?)
+  (define pending (unbox *olive-target*))
   (define target (and pending (equal? (car pending) dir) (cdr pending)))
   (when (and target
              (= (doc-id->usize doc-id)
@@ -22,4 +22,4 @@
       (search_next)
       (goto_line_start)
       (set-register! #\/ old-search)
-      (set-box! *oil-target* #f))))
+      (set-box! *olive-target* #f))))
